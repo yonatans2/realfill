@@ -1,103 +1,212 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Sat Mar 30 09:20:14 2024
+
+@author: Windows
+"""
+import sys
 import os
+from PIL import Image
+import numpy as np
+import matplotlib
+matplotlib.use('Qt5Agg')
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.figure import Figure
+from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QWidget, QFileDialog
+from PyQt5.QtCore import Qt
 import pandas as pd
-from tkinter import Tk, Canvas, filedialog, Toplevel
-from PIL import Image, ImageTk, ImageDraw
+import matplotlib.patches as patches
 
-
-# Global variable to hold references to the cropped ImageTk.PhotoImage objects
-cropped_images = []
-
-def select_folder():
-    root = Tk()
-    root.withdraw()
-    folder_path = filedialog.askdirectory()
-    root.destroy()
-    return folder_path
-
-def create_empty_image(size):
-    return Image.new("RGB", size, "white")
-
-def on_mouse_click(event):
-    global corners, canvas, img_id, empty_img_id, mode, cropped_img_id, cropped_images
-    if mode == "select":
-        if len(corners) < 2:
-            corners.append((event.x, event.y))
-            canvas.create_oval(event.x - 2, event.y - 2, event.x + 2, event.y + 2, fill='red', outline='red')
-            if len(corners) == 2:
-                canvas.create_rectangle(corners[0][0], corners[0][1], corners[1][0], corners[1][1], outline='green')
-                crop_rectangle = (corners[0][0], corners[0][1], corners[1][0], corners[1][1])
-                cropped_img = img.crop(crop_rectangle)
-                cropped_img_id = ImageTk.PhotoImage(cropped_img)  # Prepare for placing
-                mode = "place"  # Change mode
-    elif mode == "place":
-        # Add the cropped image to the list to ensure it stays on the canvas
-        cropped_images.append((cropped_img_id, event.x, event.y))
-        empty_canvas.create_image(event.x, event.y, anchor="nw", image=cropped_img_id)
-        # Save the placement along with bounding box coordinates
-        bounding_boxes.append([current_file, *corners[0], *corners[1], event.x, event.y])
-        corners = []  # Reset corners
-        mode = "select"  # Switch back to select mode
+class InteractiveCanvas(FigureCanvas):
+    def __init__(self, parent=None, dpi=100):
+        self.fig = Figure(dpi=dpi)
+        self.axes = self.fig.add_subplot(121)
+        self.axes_target = self.fig.add_subplot(122)
         
-def on_key_press(event):
-    global corners, bounding_boxes, current_file, root, canvas, mode
-    if event.keysym == 'Return' and mode == "select" and len(corners) == 2:
-        bounding_boxes.append([current_file, *corners[0], *corners[1]])
-        corners = []
-        mode = "place"  # Change mode to allow placing the cropped image
-    elif event.keysym == 'Escape':
-        root.destroy()  # Destroy the current window to move to the next image
+        self.axes_target.axis('off')  # Turn off axes for the target subplot
+        self.axes_target.set_aspect('equal')  # Set aspect ratio to be equal to avoid stretching
+        super().__init__(self.fig)
+        self.setParent(parent)
+        self.setFocusPolicy(Qt.StrongFocus)
+        self.setFocus()
+        self.mainWindow = parent
 
-def process_images(folder_path):
-    global corners, bounding_boxes, current_file, root, canvas, img_id, empty_canvas, empty_img_id, img, mode
-    bounding_boxes = []
-    corners = []
-    mode = "select"  # Start in "select" mode for drawing bounding boxes
-    image_files = [f for f in os.listdir(folder_path) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+        self.images_folder = ''
+        self.images = []
+        self.current_img_idx = -1
+        self.rect_start = None
+        self.rect_end = None
+        self.cropped_img = None  # To store the cropped image temporarily
+        self.target_img = np.ones((512, 512, 3), dtype=np.uint8) * 255  # White target image
+        self.axes_target.imshow(self.target_img, extent=[0, 512, 0, 512], aspect='equal')
+        self.df = pd.DataFrame(columns=['Source Path', 'Src_X1', 'Src_Y1', 'Src_X2', 'Src_Y2', 'Trg_X1', 'Trg_Y1'])
+        self.update_target_display()
+        self.load_images()
 
-    for image_file in image_files:
-        root = Toplevel()
-        root.bind('<Escape>', on_key_press)
-        root.bind('<Return>', on_key_press)
-        root.bind("<Button-1>", on_mouse_click)
-        current_file = os.path.join(folder_path, image_file)
-        current_file = os.path.normpath(current_file)
-        img = Image.open(current_file)
-        img_id = ImageTk.PhotoImage(img)
+        self.mpl_connect('button_press_event', self.on_click)
+        self.mpl_connect('key_press_event', self.on_key_press)
 
-        # Original image canvas
-        canvas = Canvas(root, width=img.width, height=img.height)
-        canvas.grid(row=0, column=0)
-        canvas.create_image(0, 0, anchor='nw', image=img_id)
+    def load_images(self):
+        self.images_folder = QFileDialog.getExistingDirectory(self, "Select Folder")
+        if self.images_folder:
+            self.images = [os.path.join(self.images_folder, f) for f in os.listdir(self.images_folder) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+            self.adjust_figure_size()
+            self.next_image()
+    
+    def adjust_figure_size(self):
+        max_width, max_height = get_max_image_size(self.images_folder)
+        self.fig.set_size_inches((max_width + 512) / self.fig.dpi, max(max_height, 512) / self.fig.dpi, forward=True)
+        self.draw()
 
-        # Empty image canvas
-        empty_img = create_empty_image(img.size)
-        empty_img_id = ImageTk.PhotoImage(empty_img)
-        empty_canvas = Canvas(root, width=img.width, height=img.height)
-        empty_canvas.grid(row=0, column=1)
-        empty_canvas.create_image(0, 0, anchor='nw', image=empty_img_id)
+    def next_image(self):
+        if self.images:
+            self.current_img_idx = (self.current_img_idx + 1) % len(self.images)
+            image_path = self.images[self.current_img_idx]
+            img = Image.open(image_path)
+            img_arr = np.array(img)
+            self.axes.clear()
+            self.axes.imshow(img_arr)
+            self.axes.axis('off')
+            self.axes.set_title("Source Image")
+            self.draw()
+            self.rect_start=None
+            self.rect_end=None
 
-        corners = []  # Reset corners for the new image
-        root.mainloop()
+    def update_target_display(self):
+        # Reset the target image to a blank state if needed
+        self.target_img = np.ones((512, 512, 3), dtype=np.uint8) * 255  # White target image
+        
+        # Iterate through the DataFrame to place each cropped image
+        for idx, row in self.df.iterrows():
+            src_path = row['Source Path']
+            src_img = Image.open(src_path)
+            src_coords = (row['Src_X1'], row['Src_Y1'], row['Src_X2'], row['Src_Y2'])
+            trg_coords = (row['Trg_X1'], row['Trg_Y1'])
+            
+            # Crop the source image
+            cropped_img = np.array(src_img.crop(src_coords))
+            
+            # Calculate target position and dimensions
+            trg_x1, trg_y1 = trg_coords
+            height, width, _ = cropped_img.shape
+            
+            # Place cropped image onto target image, ensuring bounds checking
+            for i in range(height):
+                for j in range(width):
+                    if 0 <= trg_y1+i < 512 and 0 <= trg_x1+j < 512:  # Ensure within target bounds
+                        self.target_img[trg_y1+i, trg_x1+j, :] = cropped_img[i, j, :]
+        
+        # Display the updated target image
+        self.axes_target.clear()
+        self.axes_target.imshow(self.target_img, aspect='equal', extent=[0, 512, 0, 512])
+        self.axes_target.axis('off')
+        
+        # Optionally, add a 1-pixel wide black box around the target image as requested
+        rect = matplotlib.patches.Rectangle((1, 1), 512 , 512 , linewidth=1, edgecolor='black', facecolor='none')
+        self.axes_target.add_patch(rect)
+        
+        self.axes_target.set_title("Target Image")  # Add title if needed
+        self.draw()
+        
+   
+    def on_click(self, event):
+        #print (event.inaxes,event.xdata,event.ydata)
+        if event.inaxes == self.axes and self.rect_start is None:
+            self.rect_start = (int(event.xdata), int(event.ydata))
+        elif event.inaxes == self.axes and self.rect_start is not None:
+            x0, y0 = self.rect_start
+            x1, y1 = (int(event.xdata), int(event.ydata))
+            width = x1 - x0
+            height = y1 - y0
+            self.rect_end = x1,y1
 
-    return bounding_boxes
+            rect = matplotlib.patches.Rectangle(self.rect_start, width, height, linewidth=1, edgecolor='magenta', facecolor='none')
+            self.axes.add_patch(rect)
+            self.draw()
 
-# Adjust the save_to_csv function to include the placement of the cropped images
-def save_to_csv(bounding_boxes):
-    base_filename = 'bounding_boxes'
-    filename = base_filename + '.csv'
+            # Cropping and storing the selected part of the image
+            image_path = self.images[self.current_img_idx]
+            img = Image.open(image_path)
+            self.cropped_img = img.crop((x0, y0, event.xdata, event.ydata))
+ 
+        if event.inaxes == self.axes_target and self.cropped_img is not None:
+            trg_x, trg_y = (int(event.xdata), 512-int(event.ydata))
+            src_path = self.images[self.current_img_idx]
+            x0, x1 = min( self.rect_start[0], self.rect_end[0]), max ( self.rect_start[0], self.rect_end[0])
+            y0, y1 = min( self.rect_start[1], self.rect_end[1]), max ( self.rect_start[1], self.rect_end[1])
+            new_index = len(self.df)
+            self.df.loc[new_index] = [src_path, x0, y0, x1, y1, trg_x, trg_y]
+            self.update_target_display()
+            self.rect_start = None
+            self.cropped_img = None
+            
+    def on_key_press(self, event):
+        if event.key == ' ':
+            self.next_image()
+        elif event.key == 'escape':
+            save_dataframe_to_csv(self.df, 'target_image')
+            save_image_to_png(self.target_img, 'target_image')
+            self.mainWindow.close()
+
+class ApplicationWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Interactive Image Cropping and Placing")
+
+        widget = QWidget(self)
+        self.setCentralWidget(widget)
+
+        layout = QVBoxLayout(widget)
+        canvas = InteractiveCanvas(self)
+        layout.addWidget(canvas)
+
+def get_max_image_size(images_folder):
+    max_width, max_height = 0, 0
+    for img_name in os.listdir(images_folder):
+        if img_name.lower().endswith(('.png', '.jpg', '.jpeg')):
+            img_path = os.path.join(images_folder, img_name)
+            with Image.open(img_path) as img:
+                width, height = img.size
+                max_width, max_height = max(max_width, width), max(max_height, height)
+    return max_width, max_height
+
+def save_dataframe_to_csv(df, base_filename):
+    """
+    Saves a DataFrame to a CSV file. If the target file exists, appends a numeric suffix to ensure uniqueness.
+
+    :param df: pandas DataFrame to be saved.
+    :param base_filename: String base filename without extension or numeric suffix.
+    """
+    filename = f'{base_filename}.csv'
     counter = 1
-    
+    # Check if the file exists and increment the counter until finding a unique filename
     while os.path.exists(filename):
-        filename = f"{base_filename}_{counter}.csv"
+        filename = f'{base_filename}_{counter}.csv'
         counter += 1
-    
-    df = pd.DataFrame(bounding_boxes, columns=['File Path', 'X1', 'Y1', 'X2', 'Y2', 'Placement X', 'Placement Y'])
+    # Save the DataFrame to the new unique filename
     df.to_csv(filename, index=False)
-    print(f"Bounding boxes saved to '{filename}'.")
+    print(f"DataFrame saved to '{filename}'.")
 
+def save_image_to_png(image_array, base_filename):
+    """
+    Saves an image array to a PNG file. If the target file exists, appends a numeric suffix to ensure uniqueness.
+
+    :param image_array: Numpy array representing the image to be saved.
+    :param base_filename: String base filename without extension or numeric suffix.
+    """
+    filename = f'{base_filename}.png'
+    counter = 1
+    # Check if the file exists and increment the counter until finding a unique filename
+    while os.path.exists(filename):
+        filename = f'{base_filename}_{counter}.png'
+        counter += 1
+    # Save the image to the new unique filename
+    img = Image.fromarray(image_array)
+    img.save(filename)
+    print(f"Image saved to '{filename}'.")    
 
 if __name__ == '__main__':
-    folder_path = select_folder()
-    if folder_path:
-        bounding_boxes = process_images(folder_path)
-        save_to_csv(bounding_boxes)
+    app = QApplication(sys.argv)
+    main_window = ApplicationWindow()
+    main_window.show()
+    sys.exit(app.exec_())

@@ -43,6 +43,7 @@ class InteractiveCanvas(FigureCanvas):
         self.max_width = max(self.max_width, 512)
         self.max_height = max(self.max_height, 512)
         self.target_img = np.ones((self.max_width, self.max_height, 3), dtype=np.uint8) * 255  # White target image
+        self.target_mask = self.target_img.copy()
         self.axes_target.imshow(self.target_img, extent=[0,self.max_width, 0, self.max_height], aspect='auto')
         self.df = pd.DataFrame(columns=['Source Path', 'Src_X1', 'Src_Y1', 'Src_X2', 'Src_Y2', 'Trg_X1', 'Trg_Y1'])
         self.update_target_display()
@@ -84,6 +85,7 @@ class InteractiveCanvas(FigureCanvas):
     def update_target_display(self):
         # Reset the target image to a blank state
         self.target_img = np.ones((self.max_width, self.max_height, 3), dtype=np.uint8) * 255  # White target image
+        self.target_mask = self.target_img.copy()
         
         # Iterate through the DataFrame to place each cropped image
         for idx, row in self.df.iterrows():
@@ -104,6 +106,7 @@ class InteractiveCanvas(FigureCanvas):
                 for j in range(width):
                     if 0 <= trg_y1+i < self.max_width and 0 <= trg_x1+j < self.max_height:  # Ensure within target bounds
                         self.target_img[trg_y1+i, trg_x1+j, :] = cropped_img[i, j, :]
+                        self.target_mask[trg_y1+i, trg_x1+j, :] = 0
         
         # Display the updated target image
         self.axes_target.clear()
@@ -116,7 +119,29 @@ class InteractiveCanvas(FigureCanvas):
         
         self.axes_target.set_title("Target Image")  # Add title if needed
         self.draw()
-        
+ 
+        def create_mask(self):
+            # Reset the target image to a blank state
+            self.target_img = np.ones((self.max_width, self.max_height, 3), dtype=np.uint8) * 255  # White target image
+            
+            # Iterate through the DataFrame to place each cropped image
+            for idx, row in self.df.iterrows():
+                src_path = row['Source Path']
+                src_img = Image.open(src_path)
+                src_coords = (row['Src_X1'], row['Src_Y1'], row['Src_X2'], row['Src_Y2'])
+                trg_coords = (row['Trg_X1'], row['Trg_Y1'])
+                
+                
+                # Calculate target position and dimensions
+                trg_x1, trg_y1 = trg_coords
+                height, width, _ = cropped_img.shape
+                
+                # Place cropped image onto target image, ensuring bounds checking
+                for i in range(height):
+                    for j in range(width):
+                        if 0 <= trg_y1+i < self.max_width and 0 <= trg_x1+j < self.max_height:  # Ensure within target bounds
+                            self.target_img[trg_y1+i, trg_x1+j, :] = 0 
+
    
     def on_click(self, event):
         #print (event.inaxes,event.xdata,event.ydata)
@@ -155,6 +180,7 @@ class InteractiveCanvas(FigureCanvas):
         elif event.key == 'escape':
             save_dataframe_to_csv(self.df, 'target_image')
             save_image_to_png(self.target_img, 'target_image')
+            save_image_to_png(self.target_mask, 'target_mask')
             self.mainWindow.close()
 
 class ApplicationWindow(QMainWindow):
@@ -205,6 +231,7 @@ def save_image_to_png(image_array, base_filename):
     """
     filename = f'{base_filename}.png'
     counter = 1
+    
     # Check if the file exists and increment the counter until finding a unique filename
     while os.path.exists(filename):
         filename = f'{base_filename}_{counter}.png'

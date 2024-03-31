@@ -80,8 +80,9 @@ if __name__ == "__main__":
     mask_image = mask_image.filter(blur_kernel)
 
     for idx, result in enumerate(results):
-        result = Image.composite(result, image, mask_image)
+        result = Image.composite(result, image.resize((512,512)), mask_image.resize((512,512)))
         result.save(f"{args.output_dir}/{idx}.png")
 
     del pipe
     torch.cuda.empty_cache()
+

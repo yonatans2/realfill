@@ -19,6 +19,7 @@ import matplotlib.patches as patches
 
 class InteractiveCanvas(FigureCanvas):
     def __init__(self, parent=None, dpi=100):
+
         self.fig = Figure(dpi=dpi)
         self.axes = self.fig.add_subplot(121)
         self.axes_target = self.fig.add_subplot(122)
@@ -37,8 +38,12 @@ class InteractiveCanvas(FigureCanvas):
         self.rect_start = None
         self.rect_end = None
         self.cropped_img = None  # To store the cropped image temporarily
-        self.target_img = np.ones((512, 512, 3), dtype=np.uint8) * 255  # White target image
-        self.axes_target.imshow(self.target_img, extent=[0, 512, 0, 512], aspect='equal')
+        self.images_folder = QFileDialog.getExistingDirectory(self, "Select Folder")
+        self.max_width, self.max_height = get_max_image_size(self.images_folder)
+        self.max_width = max(self.max_width, 512)
+        self.max_height = max(self.max_height, 512)
+        self.target_img = np.ones((self.max_width, self.max_height, 3), dtype=np.uint8) * 255  # White target image
+        self.axes_target.imshow(self.target_img, extent=[0,self.max_width, 0, self.max_height], aspect='auto')
         self.df = pd.DataFrame(columns=['Source Path', 'Src_X1', 'Src_Y1', 'Src_X2', 'Src_Y2', 'Trg_X1', 'Trg_Y1'])
         self.update_target_display()
         self.load_images()
@@ -47,15 +52,19 @@ class InteractiveCanvas(FigureCanvas):
         self.mpl_connect('key_press_event', self.on_key_press)
 
     def load_images(self):
-        self.images_folder = QFileDialog.getExistingDirectory(self, "Select Folder")
+
         if self.images_folder:
+
             self.images = [os.path.join(self.images_folder, f) for f in os.listdir(self.images_folder) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
             self.adjust_figure_size()
             self.next_image()
     
     def adjust_figure_size(self):
-        max_width, max_height = get_max_image_size(self.images_folder)
-        self.fig.set_size_inches((max_width + 512) / self.fig.dpi, max(max_height, 512) / self.fig.dpi, forward=True)
+        self.max_width, self.max_height = get_max_image_size(self.images_folder)
+        self.max_width = max(self.max_width, 512)
+        self.max_height = max(self.max_height, 512)
+        self.target_img = np.ones((self.max_width, self.max_height, 3), dtype=np.uint8) * 255 
+        self.fig.set_size_inches((2* self.max_width ) / self.fig.dpi, self.max_height / self.fig.dpi, forward=True)
         self.draw()
 
     def next_image(self):
@@ -73,8 +82,8 @@ class InteractiveCanvas(FigureCanvas):
             self.rect_end=None
 
     def update_target_display(self):
-        # Reset the target image to a blank state if needed
-        self.target_img = np.ones((512, 512, 3), dtype=np.uint8) * 255  # White target image
+        # Reset the target image to a blank state
+        self.target_img = np.ones((self.max_width, self.max_height, 3), dtype=np.uint8) * 255  # White target image
         
         # Iterate through the DataFrame to place each cropped image
         for idx, row in self.df.iterrows():
@@ -93,16 +102,16 @@ class InteractiveCanvas(FigureCanvas):
             # Place cropped image onto target image, ensuring bounds checking
             for i in range(height):
                 for j in range(width):
-                    if 0 <= trg_y1+i < 512 and 0 <= trg_x1+j < 512:  # Ensure within target bounds
+                    if 0 <= trg_y1+i < self.max_width and 0 <= trg_x1+j < self.max_height:  # Ensure within target bounds
                         self.target_img[trg_y1+i, trg_x1+j, :] = cropped_img[i, j, :]
         
         # Display the updated target image
         self.axes_target.clear()
-        self.axes_target.imshow(self.target_img, aspect='equal', extent=[0, 512, 0, 512])
+        self.axes_target.imshow(self.target_img, aspect='equal', extent=[0, self.max_width, 0, self.max_height])
         self.axes_target.axis('off')
         
         # Optionally, add a 1-pixel wide black box around the target image as requested
-        rect = matplotlib.patches.Rectangle((1, 1), 512 , 512 , linewidth=1, edgecolor='black', facecolor='none')
+        rect = matplotlib.patches.Rectangle((1, 1), self.max_width, self.max_height , linewidth=1, edgecolor='black', facecolor='none')
         self.axes_target.add_patch(rect)
         
         self.axes_target.set_title("Target Image")  # Add title if needed
@@ -130,7 +139,7 @@ class InteractiveCanvas(FigureCanvas):
             self.cropped_img = img.crop((x0, y0, event.xdata, event.ydata))
  
         if event.inaxes == self.axes_target and self.cropped_img is not None:
-            trg_x, trg_y = (int(event.xdata), 512-int(event.ydata))
+            trg_x, trg_y = (int(event.xdata), self.max_height-int(event.ydata))
             src_path = self.images[self.current_img_idx]
             x0, x1 = min( self.rect_start[0], self.rect_end[0]), max ( self.rect_start[0], self.rect_end[0])
             y0, y1 = min( self.rect_start[1], self.rect_end[1]), max ( self.rect_start[1], self.rect_end[1])
